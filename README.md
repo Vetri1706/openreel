@@ -37,6 +37,11 @@ The initial dependency installation needs internet; composition and rendering do
 
 ## Connect your director
 
+For an installable production workflow, use the [Claude Code plugin, Gemini CLI
+extension, or portable Codex skill](docs/plugins.md). They guide your agent through
+creating assets, using the studio, and verifying the finished export. The package
+connects the same running studio described below.
+
 With the studio running:
 
 ```sh
@@ -176,8 +181,9 @@ to share the same studio. Back up the complete directory with the server stopped
 
 Richer transitions, clip trimming, GPU-aware scheduling, tenant isolation and
 quotas, and published client marketplace listings remain future work. The current
-client integration is the MCP server, with copyable configuration examples in
-[`examples/integrations/`](examples/integrations/). See [architecture](docs/architecture.md).
+client integration includes the MCP server, [installable agent workflow](docs/plugins.md),
+and copyable configuration examples in [`examples/integrations/`](examples/integrations/).
+See [architecture](docs/architecture.md).
 
 ## License
 

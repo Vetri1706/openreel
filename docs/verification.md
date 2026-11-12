@@ -6,6 +6,9 @@ Verified on 12 November 2026 with Python 3.13 on Windows.
 - Ruff lint and formatting checks pass.
 - JavaScript syntax check passes (`node --check src/openreel/static/app.js`).
 - Source distribution and wheel build successfully (`uv build`).
+- Claude/Gemini package manifests and paths pass static checks; the shared
+  OpenReel skill passes frontmatter validation. A separate instruction review
+  covered procedural animation, unavailable media transfer, and revision conflicts.
 - Real FFmpeg tests encode and decode MP4s in all three aspect ratios, including
   audio mixing, imported video, Tamil captions, cancellation, and timed words.
 - Queue tests cover concurrent claims, stale leases, restart recovery, immutable
@@ -43,4 +46,6 @@ infrastructure, Docker execution, a two-hour/1,000-scene benchmark, or an indepe
 security audit. HTTP worker tests run in-process against the real application.
 Whisper provides estimated word timestamps rather than a separately verified
 forced-alignment model. The application remains single-owner; marketplace
-publication, tenant isolation, and GPU-aware scheduling are not implemented.
+directory publication, tenant isolation, and GPU-aware scheduling are not implemented.
+Claude Code/Gemini CLI native package validators and live plugin loading were not
+run because those clients are not installed in this verification environment.

@@ -4,6 +4,10 @@ OpenReel supplies the same production and generation tools to its browser studio
 and connected AI clients. The connected model plans scenes using its existing
 session. OpenReel does not consume an LLM API key to direct a project.
 
+For the packaged production workflow, see [Install the OpenReel agent workflow](plugins.md):
+Claude Code plugin, Gemini CLI extension, and portable Codex skill. This page also
+covers manual MCP setup and authenticated connections from hosted web clients.
+
 There are two media generation routes:
 
 - **Inside OpenReel:** select a configured ComfyUI workflow in **Generate media**.

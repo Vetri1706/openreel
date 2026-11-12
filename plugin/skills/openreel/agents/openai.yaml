@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenReel"
+  short_description: "Direct films with your agent and OpenReel"
+  default_prompt: "Use $openreel to create assets and produce a film in my connected OpenReel studio."
