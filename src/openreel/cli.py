@@ -8,7 +8,9 @@ from .service import Service
 
 def main():
     parser = argparse.ArgumentParser(description="OpenReel — video production for your AI, on your machine.")
-    parser.add_argument("command", choices=["studio", "mcp", "doctor", "demo"], nargs="?", default="studio")
+    parser.add_argument(
+        "command", choices=["studio", "mcp", "doctor", "demo", "worker"], nargs="?", default="studio"
+    )
     parser.add_argument(
         "--data-dir",
         type=Path,
@@ -25,6 +27,16 @@ def main():
         default=os.environ.get("OPENREEL_PUBLIC_URL"),
         help="HTTPS origin; enables OAuth and owner-key authentication.",
     )
+    parser.add_argument(
+        "--server",
+        default=os.environ.get("OPENREEL_RENDER_SERVER"),
+        help="Remote OpenReel origin for the worker command; omit to use --data-dir.",
+    )
+    parser.add_argument(
+        "--worker-key",
+        default=os.environ.get("OPENREEL_WORKER_KEY"),
+        help="Dedicated worker credential; prefer setting OPENREEL_WORKER_KEY.",
+    )
     args = parser.parse_args()
     if (
         args.command == "studio"
@@ -34,22 +46,40 @@ def main():
         parser.error(
             "A non-loopback host requires --public-url and OPENREEL_OWNER_KEY. See docs/connections.md."
         )
-    service = Service(args.data_dir, args.import_root)
-    if args.command == "mcp":
-        from .mcp_server import build_mcp
+    if args.command == "worker":
+        if args.server:
+            if not args.worker_key:
+                parser.error("Remote workers require OPENREEL_WORKER_KEY or --worker-key.")
+            from .remote import run_worker
 
-        build_mcp(service).run(transport="stdio")
-    elif args.command == "doctor":
-        print(json.dumps(service.capabilities(), indent=2))
-    elif args.command == "demo":
-        print(service.demo().model_dump_json(indent=2))
-    else:
-        import uvicorn
+            run_worker(args.server, args.worker_key, args.data_dir)
+            return
+    service = Service(
+        args.data_dir, args.import_root, render_worker=False if args.command == "worker" else None
+    )
+    try:
+        if args.command == "worker":
+            try:
+                service.renderer.run_worker()
+            except KeyboardInterrupt:
+                pass
+        elif args.command == "mcp":
+            from .mcp_server import build_mcp
 
-        from .web import create_app
+            build_mcp(service).run(transport="stdio")
+        elif args.command == "doctor":
+            print(json.dumps(service.capabilities(), indent=2))
+        elif args.command == "demo":
+            print(service.demo().model_dump_json(indent=2))
+        else:
+            import uvicorn
 
-        app = create_app(service, args.public_url, os.environ.get("OPENREEL_OWNER_KEY"))
-        uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
+            from .web import create_app
+
+            app = create_app(service, args.public_url, os.environ.get("OPENREEL_OWNER_KEY"))
+            uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
+    finally:
+        service.close()
 
 
 if __name__ == "__main__":

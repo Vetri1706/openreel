@@ -1,0 +1,10 @@
+{
+  "name": "openreel",
+  "version": "0.1.0",
+  "description": "Direct OpenReel projects with shared studio tools and agent-created media.",
+  "mcpServers": {
+    "openreel": {
+      "httpUrl": "http://127.0.0.1:8787/mcp"
+    }
+  }
+}

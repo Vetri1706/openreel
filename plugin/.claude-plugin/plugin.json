@@ -1,0 +1,12 @@
+{
+  "name": "openreel",
+  "version": "0.1.0",
+  "description": "Direct OpenReel projects with shared studio tools and agent-created media.",
+  "author": {
+    "name": "Vetri1706",
+    "url": "https://github.com/Vetri1706"
+  },
+  "homepage": "https://github.com/Vetri1706/openreel",
+  "repository": "https://github.com/Vetri1706/openreel",
+  "license": "Apache-2.0"
+}

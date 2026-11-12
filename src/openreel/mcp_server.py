@@ -1,19 +1,32 @@
+import asyncio
+import io
+import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Image as MCPImage
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
+from PIL import Image as PILImage
 
 from .auth import OwnerOAuth
+from .generation import AgentProvenance, GenerationRequest
 from .models import Character, Project, Scene
 from .service import Service
 
 INSTRUCTIONS = """You are the director; OpenReel is your local video production engine.
 First get_capabilities, then create_project. Write scenes yourself and call create_storyboard.
 Import real visuals, or use explicit title_card and color fields for typography videos.
-OpenReel does NOT synthesize images or generative motion. Never claim it does.
+Use generate_asset with configured ComfyUI workflows for image/video generation inside OpenReel.
+For your own native media tools, use provider='agent', generate actual media yourself, upload/import
+the resulting file, then complete_generation with its asset ID. list_generation_jobs finds pending
+studio requests. Use read_image_asset to inspect actual reference images before native generation.
+Never claim you can use native media tools unless your client actually provides them.
+Poll get_generation_status and only report completion after a real asset is returned. Agent handoffs
+may require the user to download/upload output if the client cannot pass its generated file to MCP.
+Use transcribe_scene for word captions only when transcription capability is available.
 Character descriptions, reference assets, and seeds are production notes, not an identity guarantee.
 Import assets before assigning their IDs. Use expected_revision from the latest get_project
 on every edit; on conflict read again and reconcile. Narration text is silent until generate_voice
@@ -82,6 +95,7 @@ def build_mcp(service: Service, oauth: OwnerOAuth | None = None):
             project=service.store.get(project_id).model_dump(),
             assets=service.store.assets(project_id),
             renders=service.store.jobs(project_id),
+            generations=service.generation.list(project_id),
         )
 
     @mcp.tool(annotations=edit)
@@ -107,19 +121,86 @@ def build_mcp(service: Service, oauth: OwnerOAuth | None = None):
     if service.import_root and not oauth:
 
         @mcp.tool(annotations=write)
-        def import_asset(project_id: str, path: str) -> dict[str, Any]:
+        async def import_asset(project_id: str, path: str) -> dict[str, Any]:
             """Copy an image, video, or audio file from the configured import root into a project."""
-            return service.import_file(project_id, path).model_dump()
+            asset = await asyncio.to_thread(service.import_file, project_id, path)
+            return asset.model_dump()
 
     @mcp.tool(annotations=write)
-    def upload_asset(project_id: str, filename: str, content_base64: str) -> dict[str, Any]:
+    async def upload_asset(project_id: str, filename: str, content_base64: str) -> dict[str, Any]:
         """Upload up to 8 MB of base64 media. Assign the returned asset ID to a scene or character."""
-        return service.upload_base64(project_id, filename, content_base64).model_dump()
+        asset = await asyncio.to_thread(service.upload_base64, project_id, filename, content_base64)
+        return asset.model_dump()
+
+    @mcp.tool(annotations=read)
+    async def read_image_asset(asset_id: str) -> MCPImage:
+        """View an imported reference image as a JPEG thumbnail up to 1024 pixels; the original asset is preserved."""
+
+        def thumbnail():
+            if not re.fullmatch(r"[a-f0-9]{32}", asset_id):
+                raise ValueError("Use an image asset ID returned by OpenReel.")
+            asset = service.store.asset(asset_id)
+            if asset.kind != "image":
+                raise ValueError("This tool accepts image assets only.")
+            path = service.store.asset_path(asset_id).resolve()
+            if not path.is_relative_to((service.store.root / "assets").resolve()):
+                raise ValueError("The image asset path is outside the asset library.")
+            with PILImage.open(path) as original:
+                original.thumbnail((1024, 1024), PILImage.Resampling.LANCZOS)
+                image = original.convert("RGB")
+                output = io.BytesIO()
+                image.save(output, "JPEG", quality=85, optimize=True)
+            content = output.getvalue()
+            if len(content) > 1024 * 1024:
+                raise ValueError("The image thumbnail exceeds the 1 MiB response limit.")
+            return MCPImage(data=content, format="jpeg")
+
+        return await asyncio.to_thread(thumbnail)
 
     @mcp.tool(annotations=edit)
-    def generate_voice(project_id: str, scene_id: str, voice: str, expected_revision: int) -> Project:
+    async def generate_voice(project_id: str, scene_id: str, voice: str, expected_revision: int) -> Project:
         """Synthesize scene narration with an installed Piper .onnx voice and attach the resulting WAV."""
-        return service.generate_voice(project_id, scene_id, voice, expected_revision)
+        return await asyncio.to_thread(service.generate_voice, project_id, scene_id, voice, expected_revision)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
+    def generate_asset(project_id: str, request: GenerationRequest) -> dict[str, Any]:
+        """Generate through a configured ComfyUI workflow or request an agent's native media output. Poll status."""
+        return service.generation.submit(project_id, request)
+
+    @mcp.tool(annotations=read)
+    def list_generation_jobs(
+        project_id: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Find persisted generation jobs, especially awaiting_agent requests created inside the studio."""
+        return service.generation.list(project_id, status)
+
+    @mcp.tool(annotations=read)
+    def get_generation_status(job_id: str) -> dict[str, Any]:
+        """Read generation state and the actual imported output asset, if completed."""
+        return service.generation.get(job_id)
+
+    @mcp.tool(annotations=edit)
+    def complete_generation(
+        job_id: str, asset_id: str, provenance: AgentProvenance | None = None
+    ) -> dict[str, Any]:
+        """Finish an agent handoff with actual uploaded media belonging to the request's project and media kind."""
+        return service.generation.complete(job_id, asset_id, provenance)
+
+    @mcp.tool(annotations=edit)
+    def cancel_generation(job_id: str) -> dict[str, Any]:
+        """Cancel a generation request; other users' ComfyUI jobs are not interrupted."""
+        return service.generation.cancel(job_id)
+
+    @mcp.tool(annotations=edit)
+    async def transcribe_scene(
+        project_id: str, scene_id: str, expected_revision: int, language: str | None = None
+    ) -> Project:
+        """Transcribe attached narration with configured local Whisper weights and save timed word captions."""
+        if language is not None and not re.fullmatch(r"[a-z]{2,3}", language):
+            raise ValueError("Use a two- or three-letter language code, or omit it for detection.")
+        return await asyncio.to_thread(
+            service.transcribe_scene, project_id, scene_id, expected_revision, language
+        )
 
     @mcp.tool(annotations=write)
     def render_video(

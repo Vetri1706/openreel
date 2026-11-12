@@ -9,10 +9,11 @@ from pathlib import Path
 import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from .config import limits
 from .models import Asset, Scene, uid
 from .store import Store
 
-MAX_UPLOAD = 50 * 1024 * 1024
+MAX_UPLOAD = limits().max_upload_bytes
 Image.MAX_IMAGE_PIXELS = 40_000_000
 FONTS = Path(__file__).parent / "static" / "fonts"
 
@@ -32,30 +33,47 @@ def font(size: int, text: str = "", display=False):
 
 
 def import_bytes(store: Store, project_id: str, name: str, content: bytes) -> Asset:
+    """Import a bounded in-memory response; large uploads should use import_file."""
+    return _import_stream(store, project_id, name, io.BytesIO(content), len(content))
+
+
+def import_file(store: Store, project_id: str, name: str, source: Path) -> Asset:
+    """Validate and copy an uploaded or local file without loading it into memory."""
+    with source.open("rb") as stream:
+        return _import_stream(store, project_id, name, stream, source.stat().st_size)
+
+
+def _import_stream(store: Store, project_id: str, name: str, stream, size: int) -> Asset:
     store.get(project_id)
-    if not content or len(content) > MAX_UPLOAD:
-        raise ValueError("Choose a nonempty file smaller than 50 MB.")
+    cap = limits().max_upload_bytes
+    if not size or size > cap:
+        raise ValueError(f"Choose a nonempty file no larger than {cap // (1024 * 1024)} MB.")
     ext = Path(name).suffix.lower()
     asset_id = uid()
     if ext in {".png", ".jpg", ".jpeg", ".webp"}:
         kind, ext = "image", ".png"
-        try:
-            with Image.open(io.BytesIO(content)) as img:
-                img = ImageOps.exif_transpose(img).convert("RGB")
-                img.thumbnail((4096, 4096))
-                output = io.BytesIO()
-                img.save(output, format="PNG")
-                content = output.getvalue()
-        except Exception as exc:
-            raise ValueError("This image could not be decoded.") from exc
     elif ext in {".mp4", ".mov", ".webm", ".wav", ".mp3", ".m4a", ".ogg", ".flac"}:
         kind = "video" if ext in {".mp4", ".mov", ".webm"} else "audio"
     else:
         raise ValueError("Use PNG, JPEG, WebP, MP4, MOV, WebM, WAV, MP3, M4A, OGG, or FLAC.")
     path = store.root / "assets" / (asset_id + ext)
-    path.write_bytes(content)
     try:
-        if kind != "image":
+        if kind == "image":
+            try:
+                with Image.open(stream) as img:
+                    img = ImageOps.exif_transpose(img).convert("RGB")
+                    img.thumbnail((4096, 4096))
+                    img.save(path, format="PNG")
+            except Exception as exc:
+                raise ValueError("This image could not be decoded.") from exc
+        else:
+            total = 0
+            with path.open("wb") as dest:
+                while chunk := stream.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > cap:
+                        raise ValueError("File exceeds the configured upload limit.")
+                    dest.write(chunk)
             result = subprocess.run(
                 [
                     ffmpeg(),
@@ -79,13 +97,15 @@ def import_bytes(store: Store, project_id: str, name: str, content: bytes) -> As
             )
             if result.returncode:
                 raise ValueError("This media file could not be decoded as " + kind + ".")
+        if path.stat().st_size > cap:
+            raise ValueError("Decoded media exceeds the configured upload limit.")
         asset = Asset(
             id=asset_id,
             project_id=project_id,
             name=Path(name).name[:160],
             kind=kind,
             filename=path.name,
-            size=len(content),
+            size=path.stat().st_size,
         )
         store.add_asset(asset)
         return asset

@@ -1,0 +1,17 @@
+{
+  "name": "openreel-tools",
+  "owner": {
+    "name": "Vetri1706",
+    "url": "https://github.com/Vetri1706"
+  },
+  "metadata": {
+    "description": "OpenReel production tools and agent-directed media workflows."
+  },
+  "plugins": [
+    {
+      "name": "openreel",
+      "source": "./plugin",
+      "description": "Direct, create media, edit, and export films through your running OpenReel studio."
+    }
+  ]
+}

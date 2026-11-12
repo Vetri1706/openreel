@@ -1,5 +1,6 @@
 import hmac
 import html
+import tempfile
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -10,18 +11,30 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mcp.server.auth.middleware.client_auth import AuthenticationError, ClientAuthenticator
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import OwnerOAuth, digest
+from .config import limits
+from .generation import AgentProvenance, GenerationRequest
 from .mcp_server import build_mcp
-from .media import MAX_UPLOAD, import_bytes
-from .models import Project, ProjectCreate, RenderRequest
+from .media import import_file
+from .models import Model, Project, ProjectCreate, RenderRequest
 from .render import subtitles
 from .service import Service
 from .store import Conflict
 
 STATIC = Path(__file__).parent / "static"
+
+
+class CompleteGeneration(Model):
+    asset_id: str
+    provenance: AgentProvenance | None = None
+
+
+class TranscribeRequest(Model):
+    expected_revision: int = Field(ge=1)
+    language: str | None = Field(default=None, pattern=r"^[a-z]{2,3}$")
 
 
 def create_app(service: Service, public_url: str | None = None, owner_key: str | None = None):
@@ -63,7 +76,11 @@ def create_app(service: Service, public_url: str | None = None, owner_key: str |
             allowed.add(public_url.rstrip("/"))
         if origin and origin not in allowed:
             return JSONResponse({"detail": "Cross-origin requests are not allowed."}, status_code=403)
-        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+        if (
+            request.url.path.startswith("/api/")
+            and request.url.path != "/api/health"
+            and not request.url.path.startswith("/api/workers/")
+        ):
             auth = request.headers.get("authorization", "")
             if oauth:
                 token = auth.removeprefix("Bearer ") if auth.startswith("Bearer ") else ""
@@ -111,7 +128,7 @@ def create_app(service: Service, public_url: str | None = None, owner_key: str |
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return (STATIC / "index.html").read_text()
+        return (STATIC / "index.html").read_text(encoding="utf-8")
 
     @app.get("/api/health")
     def health():
@@ -139,6 +156,7 @@ def create_app(service: Service, public_url: str | None = None, owner_key: str |
             "project": service.store.get(project_id),
             "assets": service.store.assets(project_id),
             "renders": service.store.jobs(project_id),
+            "generations": service.generation.list(project_id),
         }
 
     @app.put("/api/projects/{project_id}")
@@ -149,16 +167,50 @@ def create_app(service: Service, public_url: str | None = None, owner_key: str |
 
     @app.post("/api/projects/{project_id}/assets")
     async def upload(project_id: str, request: Request, filename: str):
-        if int(request.headers.get("content-length", 0)) > MAX_UPLOAD:
-            return JSONResponse({"detail": "Maximum file size is 50 MB."}, status_code=413)
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > MAX_UPLOAD:
-                return JSONResponse({"detail": "Maximum file size is 50 MB."}, status_code=413)
         from starlette.concurrency import run_in_threadpool
 
-        return await run_in_threadpool(import_bytes, service.store, project_id, filename, bytes(data))
+        service.store.get(project_id)
+        maximum = limits().max_upload_bytes
+        if int(request.headers.get("content-length", 0)) > maximum:
+            return JSONResponse(
+                {"detail": f"Maximum file size is {maximum // (1024 * 1024)} MiB."}, status_code=413
+            )
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=service.store.root / "scratch", delete=False) as destination:
+                path = Path(destination.name)
+                count = 0
+                async for chunk in request.stream():
+                    count += len(chunk)
+                    if count > maximum:
+                        return JSONResponse(
+                            {"detail": "File exceeds the configured upload limit."}, status_code=413
+                        )
+                    destination.write(chunk)
+            return await run_in_threadpool(import_file, service.store, project_id, filename, path)
+        finally:
+            if path:
+                path.unlink(missing_ok=True)
+
+    @app.post("/api/projects/{project_id}/generations")
+    def generate(project_id: str, body: GenerationRequest):
+        return service.generation.submit(project_id, body)
+
+    @app.get("/api/generations/{job_id}")
+    def generation_status(job_id: str):
+        return service.generation.get(job_id)
+
+    @app.post("/api/generations/{job_id}/cancel")
+    def cancel_generation(job_id: str):
+        return service.generation.cancel(job_id)
+
+    @app.post("/api/generations/{job_id}/complete")
+    def complete_generation(job_id: str, body: CompleteGeneration):
+        return service.generation.complete(job_id, body.asset_id, body.provenance)
+
+    @app.post("/api/projects/{project_id}/scenes/{scene_id}/transcribe")
+    def transcribe(project_id: str, scene_id: str, body: TranscribeRequest):
+        return service.transcribe_scene(project_id, scene_id, body.expected_revision, body.language)
 
     @app.get("/api/assets/{asset_id}")
     def asset(asset_id: str):
@@ -184,8 +236,11 @@ def create_app(service: Service, public_url: str | None = None, owner_key: str |
         job = service.store.job(job_id)
         if job["status"] != "completed" or filename not in {"video.mp4", "subtitles.srt", "project.json"}:
             raise KeyError("Export is not available")
+        folder = Path(job["video_path"]).resolve().parent
+        if not folder.is_relative_to((service.store.root / "renders").resolve()):
+            raise KeyError("Export is not available")
         return FileResponse(
-            service.store.root / "renders" / job_id / filename,
+            folder / filename,
             filename=filename,
             content_disposition_type="inline" if filename == "video.mp4" else "attachment",
         )
@@ -249,6 +304,9 @@ def create_app(service: Service, public_url: str | None = None, owner_key: str |
                 return HTMLResponse("Owner key did not match. Go back and try again.", status_code=403)
             return RedirectResponse(oauth.approve(ticket), status_code=303)
 
+    from .remote import install_worker_routes
+
+    install_worker_routes(app, service)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     app.mount("/", mcp_app)
     return app

@@ -1,7 +1,28 @@
 # Connect an AI client
 
-OpenReel supplies tools. The connected model plans scenes and calls those tools
-using its existing session. No LLM API key is consumed by OpenReel.
+OpenReel supplies the same production and generation tools to its browser studio
+and connected AI clients. The connected model plans scenes using its existing
+session. OpenReel does not consume an LLM API key to direct a project.
+
+For the packaged production workflow, see [Install the OpenReel agent workflow](plugins.md):
+Claude Code plugin, Gemini CLI extension, and portable Codex skill. This page also
+covers manual MCP setup and authenticated connections from hosted web clients.
+
+There are two media generation routes:
+
+- **Inside OpenReel:** select a configured ComfyUI workflow in **Generate media**.
+  The server runs the workflow and imports its real output. Your AI can invoke
+  this identical workflow through MCP.
+- **Inside your AI client:** create an **AI handoff** request, then ask a connected
+  client to generate the image or clip using its own available tools. The client
+  imports the output and completes the saved request. You can also upload its
+  output in the studio. A handoff does not open a chat, trigger a client remotely,
+  or imply that the client has media generation tools.
+
+See [generation setup](generation.md) for model/workflow configuration. A platform
+subscription is not an API credential and does not automatically grant image,
+video, or file-transfer capabilities to an MCP integration. This is an independent
+MCP integration, not an official ChatGPT, Claude, or Gemini marketplace listing.
 
 ## Codex and Claude Code: local HTTP
 
@@ -53,8 +74,38 @@ to copy files from that directory. Symlinks escaping the directory are refused.
 Without this flag, use `upload_asset` or the studio. A remote OAuth server never
 exposes the local-path import tool.
 
-Official configuration references: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+Official configuration references: [Codex MCP](https://developers.openai.com/codex/mcp)
 and [Claude Code MCP](https://code.claude.com/docs/en/mcp).
+
+## Gemini CLI
+
+Gemini CLI supports the same Streamable HTTP MCP endpoint:
+
+```sh
+gemini mcp add --transport http openreel http://127.0.0.1:8787/mcp
+gemini mcp list
+```
+
+Alternatively merge the following into `.gemini/settings.json` for your project:
+
+```json
+{
+  "mcpServers": {
+    "openreel": {"httpUrl": "http://127.0.0.1:8787/mcp"}
+  }
+}
+```
+
+Use `httpUrl`, not the SSE `url` setting, for this transport. Keep OpenReel running
+and use `/mcp` in Gemini CLI to inspect tool availability. Refer to the
+[official Gemini CLI MCP guide](https://geminicli.com/docs/tools/mcp-server/) for
+remote OAuth and configuration options. This documents **Gemini CLI**, not an
+unverified extension for the Gemini consumer web/mobile app.
+
+Copyable configuration files and an agent production prompt are in
+[`examples/integrations`](../examples/integrations). Merge settings with your
+existing configuration rather than replacing it. Leave tool approvals under your
+client's control.
 
 ## ChatGPT Web and Claude Web
 
@@ -128,10 +179,23 @@ Rotating the owner key alone does not revoke already-issued OAuth tokens.
 2. `create_project(title, brief, aspect_ratio)`
 3. Optionally `add_character` and `upload_asset` / local `import_asset`
 4. `create_storyboard(project_id, scenes, expected_revision)`
-5. `update_scene` / `update_project` for timing, ordering, audio, and captions
-6. Optionally `generate_voice` using an installed Piper voice
-7. `render_video(project_id, resolution)`
-8. Poll `get_render_status(job_id)` until completed, failed, or canceled
+5. `generate_asset(project_id, request)` with a configured provider, or inspect
+   pending `list_generation_jobs(project_id)` requests created in the studio
+6. Poll `get_generation_status(job_id)`. For `awaiting_agent`, generate real media
+   using the client's tools, import it, and call
+   `complete_generation(job_id, asset_id, provenance)`; otherwise poll the
+   configured provider until it finishes. An imported result remains available
+   even when a concurrent edit prevents attaching it to the scene.
+7. `update_scene` / `update_project` for timing, ordering, audio, and captions
+8. Optionally `generate_voice` using an installed Piper voice, then
+   `transcribe_scene` for word captions with configured Whisper
+9. `render_video(project_id, resolution)`
+10. Poll `get_render_status(job_id)` until completed, failed, or canceled
+
+Inspect each tool's published schema for its current arguments. Generation
+statuses are `queued`, `generating`, `finalizing`, `awaiting_agent`, `completed`, `failed`, and
+`cancelled`. Never report a handoff request as a generated asset. Neither the
+studio nor MCP fabricates generated media when a provider is unavailable.
 
 Edits require the latest revision. On conflict, call `get_project`, reconcile,
 and retry. Do not blindly overwrite another editor's changes.

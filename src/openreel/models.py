@@ -4,6 +4,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .config import limits
+
 
 def uid() -> str:
     return uuid4().hex
@@ -25,13 +27,26 @@ class Character(Model):
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
 
 
+class CaptionWord(Model):
+    text: str = Field(min_length=1, max_length=200)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_timing(self):
+        if not self.text.strip() or self.end <= self.start:
+            raise ValueError("Caption words need text and an end after their start.")
+        return self
+
+
 class Scene(Model):
     id: str = Field(default_factory=uid, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     title: str = Field(default="Untitled scene", min_length=1, max_length=120)
-    duration: float = Field(default=4, ge=0.5, le=60)
+    duration: float = Field(default=4, ge=0.5)
     visual_prompt: str = Field(default="", max_length=4000)
     narration: str = Field(default="", max_length=2000)
     subtitle: str = Field(default="", max_length=400)
+    caption_words: list[CaptionWord] = Field(default_factory=list, max_length=20000)
     title_card: str = Field(default="", max_length=160)
     color: str = Field(default="#233a3e", pattern=r"^#[0-9a-fA-F]{6}$")
     motion: Literal["still", "push_in", "pull_out", "pan_left", "pan_right"] = "push_in"
@@ -40,6 +55,17 @@ class Scene(Model):
     audio_asset_id: str | None = None
     character_ids: list[str] = Field(default_factory=list, max_length=20)
 
+    @model_validator(mode="after")
+    def validate_scene(self):
+        if self.duration > limits().max_scene_seconds:
+            raise ValueError(f"Scenes may last at most {limits().max_scene_seconds} seconds.")
+        previous_end = 0.0
+        for word in self.caption_words:
+            if word.start < previous_end or word.end > self.duration:
+                raise ValueError("Caption words must be ordered, non-overlapping, and inside the scene.")
+            previous_end = word.end
+        return self
+
 
 class Project(Model):
     id: str = Field(default_factory=uid, pattern=r"^[a-f0-9]{32}$")
@@ -47,7 +73,7 @@ class Project(Model):
     brief: str = Field(default="", max_length=5000)
     aspect_ratio: Literal["16:9", "9:16", "1:1"] = "16:9"
     fps: Literal[24, 30] = 24
-    scenes: list[Scene] = Field(default_factory=list, max_length=60)
+    scenes: list[Scene] = Field(default_factory=list)
     characters: list[Character] = Field(default_factory=list, max_length=30)
     music_asset_id: str | None = None
     music_volume: float = Field(default=0.18, ge=0, le=1)
@@ -57,8 +83,11 @@ class Project(Model):
 
     @model_validator(mode="after")
     def validate_timeline(self):
-        if sum(s.duration for s in self.scenes) > 600:
-            raise ValueError("Projects may contain at most 10 minutes of video.")
+        cap = limits()
+        if len(self.scenes) > cap.max_scenes:
+            raise ValueError(f"Projects may contain at most {cap.max_scenes} scenes.")
+        if sum(s.duration for s in self.scenes) > cap.max_duration_seconds:
+            raise ValueError(f"Projects may contain at most {cap.max_duration_seconds} seconds of video.")
         if len({s.id for s in self.scenes}) != len(self.scenes):
             raise ValueError("Scene IDs must be unique.")
         if len({c.id for c in self.characters}) != len(self.characters):

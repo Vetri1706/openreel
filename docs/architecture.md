@@ -21,24 +21,38 @@ small and makes the core usable without a browser or Node.js.
   lifespan. This is necessary for Streamable HTTP to work inside FastAPI.
 - `static/` presents an editable storyboard and a separate rendered-video view.
 
-## Add a generative backend
+## Generation and native-agent handoff
 
-Implement an adapter that accepts a `Scene`, character references, and a configured
-model/workflow. Submit to a user-configured backend, track its real job, and import
-the resulting media using `import_bytes`. Set the resulting `asset_id` through
-the existing revision-checked editing service. This leaves composition unchanged.
+`generation.py` persists generation jobs separately from render jobs. Studio REST
+and MCP use the same manager. ComfyUI jobs snapshot an owner-configured API graph,
+bind prompt/seed/reference inputs, validate node/model availability, submit a real
+prompt, poll its history, and validate imported output. Agent handoffs remain
+`awaiting_agent` until a connected client or user supplies real media. Provider,
+model/workflow, prompt, and seed provenance accompanies the result.
 
-A ComfyUI integration should expose capability only after checking the configured
-workflow and models. Validate output media, avoid arbitrary remote file paths,
-record model/workflow/seed provenance, and distinguish cancellation from failure.
-Do not present a placeholder image or canned clip as generated output.
+Capability discovery distinguishes configured adapters from verified live readiness.
+Clients cannot supply backend URLs or executable workflow graphs. Asset attachment
+uses optimistic revisions; a conflicting edit keeps the new asset in the library.
+No placeholder image or canned clip represents a successful generated result.
+See [generation](generation.md) for lease recovery and cancellation semantics.
+
+`captions.py` runs optional local Whisper inference in a bounded subprocess.
+Word timings are scene-relative, ordered, non-overlapping, and used by preview,
+FFmpeg overlays, and SRT export. See [captions](captions.md).
 
 ## Durable workers
 
-The MVP runs one thread per service process. For scale, replace the executor with
-a durable queue and leased jobs; retain immutable snapshots and explicit statuses.
-The present queue records PIDs to detect stopped workers, not distributed leases.
-PID reuse and abrupt power loss are reasons to move to leases before hosted scale.
+SQLite stores an immutable project snapshot for every export. Local and remote
+workers atomically claim renewable leases. Only the current lease may update a
+job; expired workers cannot publish results. Each attempt writes to its own output
+directory. Restart recovery re-encodes from the snapshot. Existing completed
+exports remain downloadable; legacy pending exports lacking snapshots fail clearly.
+
+`remote.py` lets trusted workers claim, download snapshot assets, heartbeat, and
+stream their result to the coordinator using a dedicated worker key. SQLite stays
+on the coordinator. Server-generated SRT/snapshot files accompany validated video.
+Worker endpoints reject owner/OAuth credentials unless they match the separate
+worker key. See [workers](workers.md) for deployment and configurable caps.
 
 ## Security boundary
 
@@ -58,6 +72,8 @@ SQLite file; its permissions are restricted. Access/refresh bearer tokens and
 authorization codes are stored under SHA-256 hashes. Backups of the data directory
 must be treated as private, including SQLite WAL files.
 
-No telemetry, analytics scripts, external font requests, or remote AI calls are
-made by the application. A user's connected AI platform still receives the
-project/tool data shared with that platform.
+No telemetry, analytics scripts, or external font requests are made. Configured
+ComfyUI generation sends prompts and selected reference media to that backend;
+remote workers receive render snapshots and referenced assets. A connected AI
+platform receives the project/tool data shared with it. API secrets stay on the
+server; native agent tools remain controlled by their own client.
