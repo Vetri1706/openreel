@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 import sqlite3
@@ -5,7 +6,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .models import Asset, Project, now
+from .config import limits
+from .models import Asset, Project, now, uid
 
 
 class Conflict(ValueError):
@@ -108,33 +110,138 @@ class Store:
     def asset_path(self, asset_id: str) -> Path:
         return self.root / "assets" / self.asset(asset_id).filename
 
+    @staticmethod
+    def public_job(data: dict) -> dict:
+        return {key: value for key, value in data.items() if key not in {"project_snapshot", "lease_token"}}
+
     def new_job(self, job: dict):
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             active = [json.loads(row[0]) for row in c.execute("SELECT data FROM jobs")]
-            if sum(j["status"] in ("queued", "rendering") and self.alive(j) for j in active) >= 4:
+            if sum(j["status"] in ("queued", "rendering") for j in active) >= limits().max_queued_renders:
                 raise ValueError("Render queue is full. Wait for an export to finish.")
             c.execute("INSERT INTO jobs VALUES (?, ?)", (job["id"], json.dumps(job)))
-
-    @staticmethod
-    def alive(job: dict) -> bool:
-        try:
-            os.kill(job["pid"], 0)
-            return True
-        except OSError:
-            return False
 
     def job(self, job_id: str) -> dict:
         with self.connect() as c:
             row = c.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
             raise KeyError("Render not found")
+        return self.public_job(json.loads(row[0]))
+
+    def claim_job(self, worker_id: str, lease_seconds: float = 90) -> dict | None:
+        """Atomically claim the oldest pending job, including an expired lease.
+
+        A snapshot and opaque lease token are private worker data. They are never
+        exposed by job()/jobs(). Workers must heartbeat before the lease expires.
+        """
+        if not worker_id or len(worker_id) > 200 or not 5 <= lease_seconds <= 3600:
+            raise ValueError("Invalid worker ID or lease duration.")
+        clock = time.time()
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            rows = c.execute("SELECT id,data FROM jobs ORDER BY rowid").fetchall()
+            for job_id, raw in rows:
+                data = json.loads(raw)
+                if data["status"] not in {"queued", "rendering"}:
+                    continue
+                if data["status"] == "rendering" and data.get("lease_expires", 0) > clock:
+                    continue
+                if data.get("cancel"):
+                    data.update(status="canceled", lease_token=None, lease_expires=0)
+                    c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
+                    continue
+                if "project_snapshot" not in data:
+                    # Old versions did not persist snapshots, so cannot safely resume them.
+                    data.update(
+                        status="failed", error="Legacy export has no saved snapshot. Start a new export."
+                    )
+                    c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
+                    continue
+                data.update(
+                    status="rendering",
+                    progress=1,
+                    worker_id=worker_id,
+                    lease_token=uid(),
+                    lease_expires=clock + lease_seconds,
+                    attempts=data.get("attempts", 0) + 1,
+                    error=None,
+                )
+                c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
+                return data
+        return None
+
+    def leased_job(self, job_id: str, lease_token: str) -> dict:
+        with self.connect() as c:
+            row = c.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise KeyError("Render not found")
         data = json.loads(row[0])
-        if data["status"] in ("queued", "rendering") and not self.alive(data):
-            return self.update_job(job_id, status="failed", error="Renderer stopped. Start a new export.")
+        if (
+            data["status"] != "rendering"
+            or not lease_token
+            or not hmac.compare_digest(data.get("lease_token") or "", lease_token)
+            or data.get("lease_expires", 0) <= time.time()
+        ):
+            raise Conflict("Render lease expired or belongs to another worker.")
         return data
 
+    def heartbeat_job(self, job_id: str, lease_token: str, lease_seconds: float = 90) -> bool:
+        if not 5 <= lease_seconds <= 3600:
+            raise ValueError("Invalid lease duration.")
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                return False
+            data = json.loads(row[0])
+            if (
+                data["status"] != "rendering"
+                or data.get("lease_token") != lease_token
+                or data.get("lease_expires", 0) <= time.time()
+            ):
+                return False
+            data["lease_expires"] = time.time() + lease_seconds
+            c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
+            return True
+
+    def update_leased_job(self, job_id: str, lease_token: str, **changes) -> dict:
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise KeyError("Render not found")
+            data = json.loads(row[0])
+            if (
+                data["status"] != "rendering"
+                or data.get("lease_token") != lease_token
+                or data.get("lease_expires", 0) <= time.time()
+            ):
+                raise Conflict("Render lease expired or belongs to another worker.")
+            if data.get("cancel") and changes.get("status") == "completed":
+                raise Conflict("Render was canceled before completion.")
+            data.update(changes)
+            if data["status"] in {"completed", "failed", "canceled"}:
+                data.update(lease_token=None, lease_expires=0)
+            c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
+        return self.public_job(data)
+
+    def cancel_job(self, job_id: str) -> dict:
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise KeyError("Render not found")
+            data = json.loads(row[0])
+            if data["status"] in {"queued", "rendering"}:
+                data["cancel"] = True
+                if data["status"] == "queued" or data.get("lease_expires", 0) <= time.time():
+                    data.update(status="canceled", lease_token=None, lease_expires=0)
+                c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
+        return self.public_job(data)
+
     def update_job(self, job_id: str, **changes) -> dict:
+        """Administrative update; render workers must use update_leased_job."""
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -143,12 +250,14 @@ class Store:
             data = json.loads(row[0])
             data.update(changes)
             c.execute("UPDATE jobs SET data=? WHERE id=?", (json.dumps(data), job_id))
-        return data
+        return self.public_job(data)
 
     def jobs(self, project_id: str) -> list[dict]:
         with self.connect() as c:
-            rows = c.execute("SELECT id,data FROM jobs ORDER BY rowid DESC").fetchall()
-        return [self.job(row[0]) for row in rows if json.loads(row[1])["project_id"] == project_id]
+            rows = c.execute("SELECT data FROM jobs ORDER BY rowid DESC").fetchall()
+        return [
+            self.public_job(data) for row in rows if (data := json.loads(row[0]))["project_id"] == project_id
+        ]
 
     def auth_put(self, kind: str, key: str, data: dict, expires: float):
         with self.connect() as c:

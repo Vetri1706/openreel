@@ -55,7 +55,9 @@ def test_import_path_and_symlink_escape(service, tmp_path):
     assert service.import_file(p.id, str(inside)).kind == "image"
 
 
-def test_invalid_media_and_inputs(service):
+def test_invalid_media_and_inputs(service, monkeypatch):
+    monkeypatch.setenv("OPENREEL_MAX_SCENE_SECONDS", "60")
+    monkeypatch.setenv("OPENREEL_MAX_DURATION_SECONDS", "600")
     p = service.create_project("Inputs")
     for name, data in [("bad.png", b"not a png"), ("bad.mp4", b"not video"), ("bad.html", b"<html>")]:
         with pytest.raises(ValueError):
@@ -111,3 +113,17 @@ def test_media_upload(client):
     assert result.status_code == 200
     a = result.json()
     assert client.get("/api/assets/" + a["id"]).content.startswith(b"\x89PNG")
+
+
+def test_studio_utf8_and_oversized_stream_cleanup(client, service, monkeypatch):
+    assert client.get("/").status_code == 200
+    monkeypatch.setenv("OPENREEL_MAX_UPLOAD_MB", "1")
+    project = service.create_project("Bounded upload")
+    before = set((service.store.root / "scratch").iterdir())
+    response = client.post(
+        f"/api/projects/{project.id}/assets?filename=too-large.mp4",
+        content=iter([b"x" * (600 * 1024), b"y" * (600 * 1024)]),
+    )
+    assert response.status_code == 413
+    assert set((service.store.root / "scratch").iterdir()) == before
+    assert service.store.assets(project.id) == []

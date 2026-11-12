@@ -5,20 +5,29 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .media import MAX_UPLOAD, ffmpeg, illustration, import_bytes
-from .models import Character, Project, Scene
+from . import captions
+from .config import limits
+from .generation import GenerationManager
+from .media import ffmpeg, illustration, import_bytes, import_file
+from .models import CaptionWord, Character, Project, Scene
 from .render import Renderer
 from .store import Store
 
 
 class Service:
-    def __init__(self, root: Path, import_root: Path | None = None):
+    def __init__(self, root: Path, import_root: Path | None = None, render_worker: bool | None = None):
         self.store = Store(root)
-        self.renderer = Renderer(self.store)
+        self.generation = GenerationManager(self.store)
+        try:
+            self.renderer = Renderer(self.store, autostart=render_worker)
+        except BaseException:
+            self.generation.shutdown(wait=True)
+            raise
         self.import_root = import_root.resolve() if import_root else None
 
     def capabilities(self) -> dict:
         model_dir = Path(os.environ.get("OPENREEL_PIPER_MODELS", "/nonexistent"))
+        generation = self.generation.capabilities()
         return dict(
             version="0.1.0",
             renderer="FFmpeg",
@@ -26,10 +35,52 @@ class Service:
             piper_available=bool(shutil.which("piper")),
             voices=[p.name for p in model_dir.glob("*.onnx")],
             local_file_import=bool(self.import_root),
-            image_generation=False,
-            generative_video=False,
-            description="The connected AI directs. OpenReel composes images, clips, audio, and captions.",
+            image_generation=any(
+                p["configured"] and p["id"] != "agent" and "image" in p["kinds"]
+                for p in generation["providers"]
+            ),
+            generative_video=any(
+                p["configured"] and p["id"] != "agent" and "video" in p["kinds"]
+                for p in generation["providers"]
+            ),
+            generation=generation,
+            transcription=captions.capabilities(),
+            limits=limits().as_dict(),
+            description="Generate through configured ComfyUI workflows or a connected agent, then compose and render locally.",
         )
+
+    def close(self):
+        try:
+            self.generation.shutdown(wait=True)
+        finally:
+            self.renderer.pool.shutdown(wait=True)
+
+    def transcribe_scene(
+        self, project_id: str, scene_id: str, expected_revision: int, language: str | None = None
+    ):
+        from .store import Conflict
+
+        project = self.store.get(project_id)
+        if project.revision != expected_revision:
+            raise Conflict("Project changed. Reload before transcribing.")
+        scene = next((s for s in project.scenes if s.id == scene_id), None)
+        if scene is None:
+            raise KeyError("Scene not found")
+        if not scene.audio_asset_id:
+            raise ValueError("Attach narration audio to this scene before transcribing.")
+        self.store.validate_assets(project)
+        raw = captions.transcribe_audio(self.store.asset_path(scene.audio_asset_id), scene.duration, language)
+        words = [CaptionWord.model_validate(word) for word in raw]
+        # Audio is trimmed to the shot. Rounding at the last timestamp may exceed its duration.
+        words = [
+            word.model_copy(update={"end": min(word.end, scene.duration)})
+            for word in words
+            if word.start < scene.duration and word.end > word.start
+        ]
+        if not words:
+            raise ValueError("No speech was detected in this scene's narration. Existing captions were kept.")
+        scene.caption_words = words
+        return self.store.save(project)
 
     def create_project(self, title: str, brief: str = "", aspect_ratio: str = "16:9") -> Project:
         return self.store.create(Project(title=title, brief=brief, aspect_ratio=aspect_ratio))
@@ -63,17 +114,17 @@ class Service:
         resolved = Path(path).expanduser().resolve()
         if not resolved.is_relative_to(self.import_root) or not resolved.is_file():
             raise ValueError("Choose a file inside the configured import root.")
-        if resolved.stat().st_size > MAX_UPLOAD:
-            raise ValueError("Maximum file size is 50 MB.")
-        return import_bytes(self.store, project_id, resolved.name, resolved.read_bytes())
+        return import_file(self.store, project_id, resolved.name, resolved)
 
     def upload_base64(self, project_id: str, filename: str, content_base64: str):
-        if len(content_base64) > 11_000_000:
+        if len(content_base64) > 4 * ((8 * 1024 * 1024 + 2) // 3):
             raise ValueError("MCP uploads support up to 8 MB; use the studio for larger files.")
         try:
             data = base64.b64decode(content_base64, validate=True)
         except ValueError as exc:
             raise ValueError("Invalid base64 media content.") from exc
+        if len(data) > 8 * 1024 * 1024:
+            raise ValueError("MCP uploads support up to 8 MB; use the studio for larger files.")
         return import_bytes(self.store, project_id, filename, data)
 
     def generate_voice(self, project_id: str, scene_id: str, voice: str, expected_revision: int):

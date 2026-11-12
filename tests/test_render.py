@@ -61,7 +61,7 @@ def test_real_mp4_images_audio_subtitles(service, aspect):
     assert 1.4 < meta["duration"] < 1.7
     assert len(next(reader)) > 1000
     reader.close()
-    assert "வணக்கம்!" in video.with_name("subtitles.srt").read_text()
+    assert "வணக்கம்!" in video.with_name("subtitles.srt").read_text(encoding="utf-8")
     assert video.with_name("project.json").exists()
     decoded = subprocess.run(
         [ffmpeg(), "-v", "error", "-i", str(video), "-map", "0:a:0", "-f", "null", "-"], capture_output=True

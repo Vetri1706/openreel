@@ -10,7 +10,7 @@ def service(tmp_path):
     service = Service(tmp_path / "data", tmp_path / "imports")
     service.import_root.mkdir()
     yield service
-    service.renderer.pool.shutdown(wait=True)
+    service.close()
 
 
 @pytest.fixture
