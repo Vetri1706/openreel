@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#151b1e">
+  <title>OpenReel — Your story, your studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23e9b9a6'/%3E%3Ccircle cx='20' cy='20' r='11' fill='none' stroke='%23151b1e' stroke-width='5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a href="/" class="wordmark" aria-label="OpenReel home"><span class="reel-logo">◉</span> openreel<span class="alpha">STUDIO</span></a>
+    <span class="header-divider"></span>
+    <div class="project-switch"><label class="sr-only" for="project-select">Current project</label><select id="project-select"><option>Loading studio…</option></select><button id="new-project" class="icon-button" title="New project" aria-label="New project">+</button></div>
+    <div class="header-actions"><span class="local-status"><i></i> Local workspace</span><button id="connect-ai" class="secondary">Connect AI <span>↗</span></button><button id="export" class="primary" disabled>Export video <span>↑</span></button></div>
+  </header>
+  <main class="studio">
+    <nav class="rail" aria-label="Studio views">
+      <button class="rail-button active" data-view="scenes" aria-label="Storyboard" title="Storyboard"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 4v16"/></svg></button>
+      <button class="rail-button" data-view="assets" aria-label="Media library" title="Media library"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 18 5-5 4 3 4-6 4 6"/></svg></button>
+      <button class="rail-button" data-view="characters" aria-label="Characters" title="Characters"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></button>
+      <span class="rail-spacer"></span>
+      <button id="help" class="rail-button" aria-label="Connection help" title="Connection help"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 5 2c-2 1-2 2-2 3m0 3h.01"/></svg></button>
+      <span class="version">0.1</span>
+    </nav>
+    <aside class="story-panel">
+      <div class="panel-heading"><div><span class="eyebrow">YOUR FILM</span><h2 id="panel-title">Storyboard <span id="scene-count">0</span></h2></div><button id="add-scene" class="icon-button" aria-label="Add scene" title="Add scene">+</button></div>
+      <div id="sidebar-content" class="sidebar-content"></div>
+      <div class="project-note"><span class="eyebrow">THE BRIEF</span><p id="brief">Your story starts with an idea.</p><button id="edit-project" class="text-button">Project settings ↗</button></div>
+    </aside>
+    <section class="workspace" aria-label="Video workspace">
+      <div class="preview-toolbar"><div class="preview-tabs"><button id="storyboard-tab" class="tab active">Storyboard preview</button><button id="rendered-tab" class="tab" disabled>Latest export</button></div><button id="download-latest" class="text-button export-download" hidden>Download ↓</button><span id="format-badge" class="format-badge">16:9 <span>·</span> 24 FPS</span></div>
+      <div class="preview-stage" id="preview-stage"><div id="frame" class="frame"><img id="preview-image" alt="Selected scene"><video id="preview-clip" muted loop playsinline></video><div class="frame-shade"></div><div id="preview-title" class="preview-title"></div><div id="preview-subtitle" class="preview-subtitle"></div><div class="safe-corners" aria-hidden="true"></div></div><video id="rendered-video" controls playsinline hidden></video><div id="empty-preview" hidden><span>01 / THE FIRST FRAME</span><h1>Every story starts<br>somewhere.</h1><p>Add a scene, or connect your AI to direct the film.</p><button id="empty-add" class="primary">Add your first scene +</button></div></div>
+      <div class="transport"><span id="playhead" class="timecode">00:00 <span>/ 00:16</span></span><div class="transport-buttons"><button id="previous" class="icon-button" aria-label="Previous scene">|‹</button><button id="play" class="play-button" aria-label="Play storyboard">▶</button><button id="next" class="icon-button" aria-label="Next scene">›|</button></div><span id="preview-note">Timing preview <span>·</span> Export for final playback</span></div>
+      <section class="timeline" aria-label="Timeline"><div class="timeline-top"><div><h2>Timeline</h2><span id="timeline-meta">4 scenes · 16 seconds</span></div><div class="timeline-actions"><button id="save" class="secondary small">Save changes</button><span id="save-status">All changes saved</span></div></div><div id="ruler" class="ruler"></div><div class="track-row"><span class="track-label">V1 <span>Picture</span></span><div id="video-track" class="video-track"></div></div><div class="track-row"><span class="track-label">A1 <span>Audio</span></span><button id="audio-track" class="audio-track">＋ Add background audio</button></div><div class="timeline-bottom"><span><i></i> FFmpeg compositor</span><span id="timeline-total">00:16:00</span></div></section>
+    </section>
+    <aside class="inspector"><div class="panel-heading"><div><span class="eyebrow">SCENE PROPERTIES</span><h2 id="inspector-heading">The first frame</h2></div><span class="scene-dot"></span></div><div id="inspector-content"></div></aside>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="modal"><div class="modal-top"><span class="wordmark">openreel<span>●</span></span><button id="close-modal" class="icon-button" aria-label="Close dialog">×</button></div><div id="modal-content"></div></dialog>
+  <input id="file-input" type="file" hidden>
+</body>
+</html>

@@ -1,0 +1,20 @@
+[
+  {
+    "title": "A pause",
+    "duration": 4,
+    "title_card": "Take a breath.",
+    "subtitle": "A quieter moment starts here.",
+    "color": "#233a3e",
+    "motion": "push_in",
+    "transition": "fade"
+  },
+  {
+    "title": "A new perspective",
+    "duration": 4,
+    "title_card": "Find your own pace.",
+    "subtitle": "Your story. Your studio.",
+    "color": "#684d43",
+    "motion": "pull_out",
+    "transition": "fade"
+  }
+]

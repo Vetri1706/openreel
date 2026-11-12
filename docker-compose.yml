@@ -1,0 +1,16 @@
+services:
+  openreel:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      OPENREEL_PUBLIC_URL: ${OPENREEL_PUBLIC_URL:?Set your HTTPS origin in .env}
+      OPENREEL_OWNER_KEY: ${OPENREEL_OWNER_KEY:?Set a random owner key in .env}
+    volumes:
+      - studio-data:/data
+    restart: unless-stopped
+    init: true
+    mem_limit: 4g
+    cpus: 2
+volumes:
+  studio-data:

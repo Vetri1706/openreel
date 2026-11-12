@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openreel-studio"
+version = "0.1.0"
+description = "Local-first video production tools for MCP clients. No LLM API key required."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+  "mcp>=1.30,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1",
+  "pillow>=11,<13", "imageio-ffmpeg>=0.6,<1", "python-multipart>=0.0.20,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1"]
+
+[project.scripts]
+openreel = "openreel.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openreel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

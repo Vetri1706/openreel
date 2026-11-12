@@ -1,0 +1,10 @@
+.venv/
+.openreel/
+.env
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.egg-info/
+dist/
+.DS_Store

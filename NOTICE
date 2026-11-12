@@ -1,0 +1,22 @@
+OpenReel
+Copyright 2026 OpenReel contributors
+
+OpenReel source and the original procedural demo illustrations are licensed
+under Apache License 2.0. This notice does not change third-party licenses.
+
+Fonts: DM Sans, Space Grotesk, and Noto Sans Tamil are distributed under their
+respective SIL Open Font License 1.1 files in src/openreel/static/fonts/.
+Sources: https://github.com/google/fonts/tree/main/ofl/dmsans
+         https://github.com/google/fonts/tree/main/ofl/spacegrotesk
+         https://github.com/google/fonts/tree/main/ofl/notosanstamil
+
+FFmpeg is supplied separately by the imageio-ffmpeg dependency or the system.
+Its build configuration and included codecs determine its applicable licenses.
+https://ffmpeg.org/legal.html
+https://github.com/imageio/imageio-ffmpeg
+
+Piper is an optional external executable, not bundled into OpenReel. Its code
+and downloaded voice models retain their respective licenses.
+https://github.com/OHF-Voice/piper1-gpl
+
+Other dependencies retain their respective licenses.
