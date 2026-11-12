@@ -286,12 +286,12 @@ class Renderer:
                         "-threads",
                         "2",
                         "-c:a",
-                        "aac",
+                        "pcm_s16le",
                         "-ar",
                         "48000",
                         "-ac",
                         "2",
-                        str(work / f"scene-{i}.mp4"),
+                        str(work / f"scene-{i}.mov"),
                     ],
                     job_id,
                     work,
@@ -299,10 +299,15 @@ class Renderer:
                 )
                 update(progress=5 + round(80 * (i + 1) / len(project.scenes)))
             (work / "concat.txt").write_text(
-                "\n".join(f"file 'scene-{i}.mp4'" for i in range(len(project.scenes)))
+                "\n".join(
+                    f"file 'scene-{i}.mov'\nduration {round(scene.duration * fps) / fps:.9f}"
+                    for i, scene in enumerate(project.scenes)
+                )
             )
+            # Keep scene audio as PCM until the final export. Independently
+            # encoded AAC scenes introduce encoder priming at every cut.
             self._run(
-                ["-f", "concat", "-safe", "1", "-i", "concat.txt", "-c", "copy", "joined.mp4"],
+                ["-f", "concat", "-safe", "1", "-i", "concat.txt", "-c", "copy", "joined.mov"],
                 job_id,
                 work,
                 lease_lost,
@@ -313,7 +318,7 @@ class Renderer:
                 self._run(
                     [
                         "-i",
-                        "joined.mp4",
+                        "joined.mov",
                         "-stream_loop",
                         "-1",
                         "-protocol_whitelist",
@@ -340,7 +345,17 @@ class Renderer:
                 )
             else:
                 self._run(
-                    ["-i", "joined.mp4", "-c", "copy", "-movflags", "+faststart", str(video)],
+                    [
+                        "-i",
+                        "joined.mov",
+                        "-c:v",
+                        "copy",
+                        "-c:a",
+                        "aac",
+                        "-movflags",
+                        "+faststart",
+                        str(video),
+                    ],
                     job_id,
                     work,
                     lease_lost,
